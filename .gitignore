@@ -1,0 +1,6 @@
+# Genereret af PyInstaller / Python - indeholder lokale stier (brugernavn)
+build/
+dist/
+__pycache__/
+*.spec
+*.pyc

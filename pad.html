@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111317">
+<title>Telefonmus</title>
+<style>
+  :root { --bg:#111317; --pad:#1b1e24; --line:#2a2e36; --txt:#e6e8eb; --dim:#8a919c; --acc:#4f8cff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font:15px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overscroll-behavior:none; }
+  body { display:flex; flex-direction:column; gap:8px; padding:8px; height:100dvh; user-select:none; -webkit-user-select:none; }
+  header { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--dim); }
+  #dot { width:9px; height:9px; border-radius:50%; background:#d9534f; flex:none; }
+  #dot.on { background:#3fbf6f; }
+  header label { margin-left:auto; display:flex; align-items:center; gap:6px; }
+  input[type=range] { width:90px; accent-color:var(--acc); }
+  #viewbtn { flex:none; height:30px; padding:0 12px; font-size:13px; border-radius:8px; }
+  #viewbox { display:none; position:relative; height:42vh; flex:none; border-radius:12px; overflow:hidden;
+    border:1px solid var(--line); background:#000; }
+  body.viewing #viewbox { display:block; }
+  #view { width:100%; height:100%; object-fit:contain; display:block; touch-action:none; }
+  #fps { position:absolute; left:8px; top:6px; font:600 11px/1 system-ui, sans-serif; color:#fff;
+    background:rgba(0,0,0,.55); padding:3px 6px; border-radius:6px; pointer-events:none; }
+  #fps:empty { display:none; }
+  .zoom { position:absolute; right:8px; bottom:8px; display:flex; gap:6px; }
+  .zoom button { flex:none; width:40px; height:40px; border-radius:50%; font-size:20px; padding:0;
+    background:rgba(20,22,26,.75); border-color:rgba(255,255,255,.15); }
+  #pad { flex:1; background:var(--pad); border:1px solid var(--line); border-radius:16px;
+    touch-action:none; position:relative; display:grid; place-items:center; color:#3a3f48; font-size:13px; text-align:center; }
+  #pad .scroll { position:absolute; right:0; top:0; bottom:0; width:44px; border-left:1px dashed var(--line); }
+  .row { display:flex; gap:8px; }
+  button { flex:1; height:56px; border:1px solid var(--line); border-radius:12px; background:var(--pad);
+    color:var(--txt); font:inherit; font-weight:600; touch-action:manipulation; }
+  button:active, button.held { background:var(--acc); border-color:var(--acc); color:#fff; }
+  .kbd button { height:44px; flex:0 0 52px; }
+  .kbd input { flex:1; min-width:0; height:44px; border-radius:12px; border:1px solid var(--line);
+    background:var(--pad); color:var(--txt); padding:0 12px; font:inherit; }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span><span id="status">Forbinder…</span>
+  <label>Fart <input id="sens" type="range" min="0.5" max="4" step="0.1" value="1.6"></label>
+  <button id="viewbtn">Skærm</button>
+</header>
+
+<div id="viewbox">
+  <canvas id="view"></canvas>
+  <span id="fps"></span>
+  <div class="zoom"><button id="nextmon" title="Næste skærm">⇆</button><button id="zout">−</button><button id="zin">+</button></div>
+</div>
+
+<div id="pad">1 finger: flyt · tryk: klik<br>2 fingre: scroll · 2-finger-tryk: højreklik<div class="scroll"></div></div>
+
+<div class="row">
+  <button data-b="left">Venstre</button>
+  <button id="hold">Hold</button>
+  <button data-b="right">Højre</button>
+</div>
+
+<div class="row kbd">
+  <input id="txt" placeholder="Skriv tekst…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <button data-k="backspace">⌫</button>
+  <button data-k="enter">↵</button>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get("k");
+const dot = document.getElementById("dot"), status = document.getElementById("status");
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws?k=${encodeURIComponent(token)}`);
+  ws.binaryType = "blob";
+  ws.onopen = () => {
+    dot.className = "on"; status.textContent = "Forbundet";
+    if (viewing) sendView();
+  };
+  ws.onmessage = e => { if (e.data instanceof Blob) showFrame(e.data); };
+  ws.onclose = () => {
+    dot.className = ""; status.textContent = "Afbrudt – prøver igen…";
+    document.getElementById("hold").classList.remove("held");  // PC'en slipper knappen ved afbrydelse
+    setTimeout(connect, 1000);
+  };
+}
+const send = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+// ---------- skærmbillede
+const view = document.getElementById("view"), viewbox = document.getElementById("viewbox"),
+      viewbtn = document.getElementById("viewbtn");
+const ZOOM = [240, 360, 480, 640, 960, 1280, 1920, 2560];  // udsnittets bredde i PC-pixels
+let viewing = false, frameUrl = null, zi = 3;
+try { viewing = localStorage.getItem("view") === "1"; zi = +(localStorage.getItem("zoom") ?? 3); } catch {}
+function sendView() {
+  const a = viewbox.clientWidth / Math.max(1, viewbox.clientHeight) || 1.5;
+  send({ t: "view", on: viewing, w: ZOOM[zi], a });
+}
+function setViewing(on) {
+  viewing = on;
+  document.body.classList.toggle("viewing", on);
+  viewbtn.classList.toggle("held", on);
+  try { localStorage.setItem("view", on ? "1" : "0"); } catch {}
+  sendView();
+}
+function zoom(step) {
+  zi = Math.min(ZOOM.length - 1, Math.max(0, zi + step));
+  try { localStorage.setItem("zoom", zi); } catch {}
+  sendView();
+}
+viewbtn.addEventListener("click", () => setViewing(!viewing));
+document.getElementById("zin").addEventListener("click", () => zoom(-1));
+document.getElementById("zout").addEventListener("click", () => zoom(1));
+document.getElementById("nextmon").addEventListener("click", () => send({ t: "mon", d: 1 }));
+addEventListener("resize", () => { if (viewing) sendView(); });
+const ctx = view.getContext("2d"), fpsEl = document.getElementById("fps");
+let seq = 0, shown = 0, frames = 0, fpsT = performance.now();
+async function decode(blob) {
+  if (self.createImageBitmap) return createImageBitmap(blob);   // afkodes uden at blokere siden
+  const img = new Image(), url = URL.createObjectURL(blob);
+  img.src = url;
+  try { await img.decode(); return img; } finally { URL.revokeObjectURL(url); }
+}
+async function showFrame(blob) {
+  const my = ++seq;
+  try {
+    const bmp = await decode(blob);
+    if (my > shown) {                    // tegn aldrig et ældre billede oven i et nyere
+      shown = my;
+      if (view.width !== bmp.width || view.height !== bmp.height) { view.width = bmp.width; view.height = bmp.height; }
+      ctx.drawImage(bmp, 0, 0);
+      frames++;
+    }
+    bmp.close?.();
+  } catch {}
+  if (viewing) send({ t: "ack" });      // klar til et nyt billede
+}
+setInterval(() => {
+  const now = performance.now();
+  fpsEl.textContent = viewing ? `${Math.round(frames * 1000 / (now - fpsT))} fps` : "";
+  frames = 0; fpsT = now;
+}, 1000);
+// tryk på billedet = flyt musen derhen
+view.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (!shown) return;
+  // object-fit: contain -> find hvor selve billedet ligger inde i boksen
+  const r = view.getBoundingClientRect(), t = e.touches[0];
+  const s = Math.min(r.width / view.width, r.height / view.height);
+  const w = view.width * s, h = view.height * s;
+  const left = r.left + (r.width - w) / 2, top = r.top + (r.height - h) / 2;
+  send({ t: "abs", x: (t.clientX - left) / w, y: (t.clientY - top) / h });
+}, { passive: false });
+setViewing(viewing);
+connect();
+
+// ---------- touchpad
+// stop iOS' tryk-og-hold-menu, forstørrelsesglas og zoom-bevægelser
+document.addEventListener("contextmenu", e => e.preventDefault());
+for (const ev of ["gesturestart", "gesturechange", "gestureend"])
+  document.addEventListener(ev, e => e.preventDefault());
+const pad = document.getElementById("pad"), sens = document.getElementById("sens");
+try { sens.value = localStorage.getItem("sens") || sens.value; } catch {}
+sens.oninput = () => { try { localStorage.setItem("sens", sens.value); } catch {} };
+
+let mx = 0, my = 0, sx = 0, sy = 0;     // akkumuleret bevægelse / scroll
+let last = null, maxTouches = 0, startT = 0, travel = 0, edgeScroll = false;
+
+function centroid(tl) {
+  let x = 0, y = 0;
+  for (const t of tl) { x += t.clientX; y += t.clientY; }
+  return { x: x / tl.length, y: y / tl.length, n: tl.length };
+}
+
+pad.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (maxTouches === 0) {
+    startT = performance.now(); travel = 0;
+    const r = pad.getBoundingClientRect();
+    edgeScroll = e.touches.length === 1 && e.touches[0].clientX > r.right - 44;
+  }
+  maxTouches = Math.max(maxTouches, e.touches.length);
+  last = centroid(e.touches);
+}, { passive: false });
+
+pad.addEventListener("touchmove", e => {
+  e.preventDefault();
+  const c = centroid(e.touches);
+  if (!last || c.n !== last.n) { last = c; return; }
+  const dx = c.x - last.x, dy = c.y - last.y;
+  last = c;
+  travel += Math.abs(dx) + Math.abs(dy);
+  if (c.n >= 2 || edgeScroll) {
+    sx += dx * 4; sy -= dy * 4;            // naturlig scroll-retning
+  } else {
+    const speed = Math.hypot(dx, dy);
+    const k = sens.value * (1 + Math.min(speed, 30) / 12);  // let acceleration
+    mx += dx * k; my += dy * k;
+  }
+}, { passive: false });
+
+function touchEnd(e) {
+  e.preventDefault();
+  if (e.touches.length) { last = centroid(e.touches); return; }
+  const tap = performance.now() - startT < 250 && travel < 12;
+  if (tap && !edgeScroll) send({ t: "c", b: maxTouches >= 2 ? "right" : "left" });
+  maxTouches = 0; last = null;
+}
+pad.addEventListener("touchend", touchEnd, { passive: false });
+pad.addEventListener("touchcancel", touchEnd, { passive: false });
+
+// send samlet bevægelse én gang pr. frame
+(function flush() {
+  const ix = Math.trunc(mx), iy = Math.trunc(my);
+  if (ix || iy) { send({ t: "m", x: ix, y: iy }); mx -= ix; my -= iy; }
+  const jx = Math.trunc(sx), jy = Math.trunc(sy);
+  if (jx || jy) { send({ t: "s", x: -jx, y: jy }); sx -= jx; sy -= jy; }
+  requestAnimationFrame(flush);
+})();
+
+// ---------- knapper
+document.querySelectorAll("[data-b]").forEach(b =>
+  b.addEventListener("click", () => send({ t: "c", b: b.dataset.b })));
+const hold = document.getElementById("hold");
+hold.addEventListener("click", () => {
+  const on = hold.classList.toggle("held");
+  send({ t: on ? "d" : "u", b: "left" });
+});
+
+// ---------- tastatur
+const txt = document.getElementById("txt");
+let prev = "";
+txt.addEventListener("input", () => {
+  const v = txt.value;
+  let i = 0;
+  while (i < prev.length && i < v.length && prev[i] === v[i]) i++;
+  for (let n = prev.length - i; n > 0; n--) send({ t: "key", k: "backspace" });
+  if (v.length > i) send({ t: "txt", s: v.slice(i) });
+  prev = v;
+});
+txt.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); send({ t: "key", k: "enter" }); txt.value = prev = ""; }
+  else if (e.key === "Backspace" && !txt.value) send({ t: "key", k: "backspace" });
+});
+document.querySelectorAll("[data-k]").forEach(b =>
+  b.addEventListener("click", () => {
+    send({ t: "key", k: b.dataset.k });
+    if (b.dataset.k === "enter") txt.value = prev = "";
+  }));
+</script>
+</body>
+</html>
